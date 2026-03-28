@@ -5,6 +5,10 @@ from os import getenv
 from urllib.request import urlopen
 from urllib.parse import urlparse
 
+import os
+import mimetypes
+from boto3.s3.transfer import TransferConfig
+
 import boto3
 import magic
 from botocore.exceptions import ClientError
@@ -13,6 +17,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_LOCAL_TYPES = ["image/jpeg", "image/png", "application/pdf"]
+MULTIPART_THRESHOLD = 50 * 1024 * 1024  # 50MB
+CHUNK_SIZE = 10 * 1024 * 1024           # 10MB
+
 
 ALLOWED_MIME_TYPES = {
     "image/bmp":  ".bmp",
@@ -235,3 +244,85 @@ def download_file_and_upload_to_s3(
     public_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{key}"
     logger.info("Upload complete: %s", public_url)
     return public_url
+
+
+# ---------------------------------------------------------------------------
+# Local file MIME validation
+# ---------------------------------------------------------------------------
+
+def validate_local_mimetype(file_path: str) -> str:
+    """Validate local file mimetype."""
+    mime_type, _ = mimetypes.guess_type(file_path)
+
+    if mime_type not in ALLOWED_LOCAL_TYPES:
+        raise ValueError(f"Unsupported file type: {mime_type}")
+
+    logger.info("Valid mimetype: %s", mime_type)
+    return mime_type
+
+
+# ---------------------------------------------------------------------------
+# Upload local file (handles small + large automatically)
+# ---------------------------------------------------------------------------
+
+def upload_file(
+    aws_s3_client,
+    file_path: str,
+    bucket_name: str,
+) -> bool:
+    """Upload file to S3 (uses multipart for large files)."""
+    file_size = os.path.getsize(file_path)
+    key = os.path.basename(file_path)
+
+    try:
+        if file_size >= MULTIPART_THRESHOLD:
+            config = TransferConfig(
+                multipart_threshold=MULTIPART_THRESHOLD,
+                multipart_chunksize=CHUNK_SIZE
+            )
+
+            aws_s3_client.upload_file(
+                file_path,
+                bucket_name,
+                key,
+                Config=config
+            )
+            logger.info("Uploaded large file (multipart): %s", key)
+
+        else:
+            aws_s3_client.upload_file(file_path, bucket_name, key)
+            logger.info("Uploaded small file: %s", key)
+
+        return True
+
+    except Exception as e:
+        logger.error("Upload failed: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle policy (delete after 120 days)
+# ---------------------------------------------------------------------------
+
+def set_lifecycle_policy(aws_s3_client, bucket_name: str) -> bool:
+    """Set lifecycle policy to delete objects after 120 days."""
+    try:
+        aws_s3_client.put_bucket_lifecycle_configuration(
+            Bucket=bucket_name,
+            LifecycleConfiguration={
+                "Rules": [
+                    {
+                        "ID": "DeleteAfter120Days",
+                        "Filter": {"Prefix": ""},
+                        "Status": "Enabled",
+                        "Expiration": {"Days": 120}
+                    }
+                ]
+            }
+        )
+        logger.info("Lifecycle policy set for '%s'", bucket_name)
+        return True
+
+    except ClientError as e:
+        logger.error("Lifecycle policy failed: %s", e)
+        return False
