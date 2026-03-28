@@ -232,6 +232,6 @@ def download_file_and_upload_to_s3(
         logger.info("Saved local copy as '%s'.", key)
 
     region = getenv("aws_region_name", "us-west-2")
-    public_url = f"[s3-{region}.amazonaws.com](https://s3-{region}.amazonaws.com/{bucket_name}/{key})"
+    public_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{key}"
     logger.info("Upload complete: %s", public_url)
     return public_url
