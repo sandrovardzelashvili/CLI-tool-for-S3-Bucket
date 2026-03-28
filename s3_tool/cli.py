@@ -1,6 +1,11 @@
 import logging
 import sys
 
+
+import os
+
+
+
 import click
 
 from .s3 import (
@@ -13,6 +18,9 @@ from .s3 import (
     read_bucket_policy,
     set_object_access_policy,
     download_file_and_upload_to_s3,
+    upload_file,
+    validate_local_mimetype,
+    set_lifecycle_policy,
 )
 
 # ---------------------------------------------------------------------------
@@ -185,4 +193,39 @@ def cmd_upload_url(
         sys.exit(1)
     except RuntimeError as e:
         click.echo(f"❌  Upload error: {e}", err=True)
+        sys.exit(1)
+
+
+
+@cli.command("upload-file")
+@click.argument("bucket_name")
+@click.argument("file_path")
+@click.option("--validate-type", is_flag=True, help="Validate mimetype before upload.")
+@click.option("--set-lifecycle", is_flag=True, help="Set lifecycle policy (120 days).")
+@click.pass_context
+def cmd_upload_file(ctx, bucket_name, file_path, validate_type, set_lifecycle):
+    """Upload a local file to S3 (auto handles large files)."""
+
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError("File does not exist")
+
+        if validate_type:
+            validate_local_mimetype(file_path)
+
+        ok = upload_file(ctx.obj["client"], file_path, bucket_name)
+
+        if not ok:
+            raise RuntimeError("Upload failed")
+
+        click.echo(f"✅ Uploaded '{file_path}' to '{bucket_name}'")
+
+        if set_lifecycle:
+            if set_lifecycle_policy(ctx.obj["client"], bucket_name):
+                click.echo("✅ Lifecycle policy set (120 days)")
+            else:
+                click.echo("❌ Failed to set lifecycle", err=True)
+
+    except Exception as e:
+        click.echo(f"❌ {e}", err=True)
         sys.exit(1)
